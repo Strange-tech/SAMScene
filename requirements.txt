@@ -1,0 +1,35 @@
+# CAST: Component-Aligned 3D Scene Reconstruction from an RGB Image
+# Core dependencies
+
+# Deep learning
+torch>=2.0.0
+torchvision>=0.15.0
+
+# 3D processing
+open3d>=0.18.0
+trimesh>=4.0.0
+numpy>=1.24.0
+einops>=0.7.0
+
+# Image processing
+opencv-python>=4.8.0
+Pillow>=10.0.0
+imageio>=2.31.0
+
+# Transformers & foundation models
+transformers>=4.36.0
+diffusers>=0.25.0
+
+# Additional
+scipy>=1.11.0
+matplotlib>=3.7.0
+tqdm>=4.65.0
+pyyaml>=6.0
+requests>=2.31.0
+
+# Optional: for grounding-dino / SAM / Florence-2 (if using local inference)
+# groundingsam>=0.1.0
+# segment-anything>=1.0
+
+# Optional: for GPT-4V API
+# openai>=1.0.0
