@@ -24,6 +24,8 @@ a simple shape generator so the rest of the pipeline remains testable.
 """
 
 import warnings
+import os
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 from typing import Optional, Tuple, Dict
 
 import numpy as np

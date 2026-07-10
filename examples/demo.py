@@ -2,12 +2,19 @@
 Minimal demo of the CAST pipeline.
 
 Usage:
-    python examples/demo.py --image path/to/image.jpg
+    # With Qwen VLM (recommended default):
+    python examples/demo.py --image path/to/image.jpg --qwen-key sk-xxxxx
+
+    # With GPT-4V:
+    python examples/demo.py --image path/to/image.jpg --vlm openai --openai-key sk-xxxxx
+
+    # Quick test without any VLM (skips relation graph + physics):
+    python examples/demo.py --image path/to/image.jpg --quick --device cpu
 
 Notes:
   - SAM 3D Objects (facebook/sam-3d-objects) is downloaded automatically
     from HuggingFace on first run (~7 GB). Set --sam3d-offline to skip.
-  - Without a GPT-4V API key, the relation graph is empty and physics
+  - Without a VLM API key, the relation graph is empty and physics
     correction is skipped.
   - See README.md for setup instructions.
 """
@@ -19,13 +26,15 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import cv2
-from config import CASTConfig, quick_config
+from config import CASTConfig, quick_config, qwen_config
 from pipeline import CASTPipeline
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="CAST: Single-Image 3D Scene Reconstruction (SAM 3D backend)")
+        description="CAST: Single-Image 3D Scene Reconstruction (SAM 3D + Qwen VLM)")
+
+    # Image
     parser.add_argument('--image', type=str, required=True,
                         help='Path to input RGB image')
     parser.add_argument('--output', type=str, default='./output/demo',
@@ -34,6 +43,26 @@ def main():
                         help='Use quick (lower-quality) config')
     parser.add_argument('--device', type=str, default='cuda',
                         help='Device (cuda / cpu)')
+
+    # VLM provider selection
+    parser.add_argument('--vlm', type=str, default='qwen',
+                        choices=['qwen', 'openai'],
+                        help='VLM provider for relation graph (default: qwen)')
+    parser.add_argument('--qwen-key', type=str, default=None,
+                        help='Qwen (DashScope) API key')
+    parser.add_argument('--qwen-base-url', type=str,
+                        default='https://dashscope.aliyuncs.com/compatible-mode/v1',
+                        help='Qwen API base URL')
+    parser.add_argument('--qwen-model', type=str, default='qwen-vl-max',
+                        help='Qwen model name')
+    parser.add_argument('--openai-key', type=str, default=None,
+                        help='OpenAI API key (for GPT-4V fallback)')
+    parser.add_argument('--openai-base-url', type=str, default=None,
+                        help='OpenAI API base URL')
+    parser.add_argument('--openai-model', type=str, default='gpt-4-vision-preview',
+                        help='GPT-4V model name')
+    parser.add_argument('--vlm-trials', type=int, default=3,
+                        help='VLM ensemble trials for majority voting')
 
     # SAM 3D options
     parser.add_argument('--sam3d-model-id', type=str,
@@ -49,11 +78,6 @@ def main():
                         choices=['none', 'umeyama', 'icp'],
                         help='Pose refinement method (default: icp)')
 
-    # GPT-4V options
-    parser.add_argument('--openai-key', type=str, default=None,
-                        help='OpenAI API key for GPT-4V relation reasoning')
-    parser.add_argument('--openai-base-url', type=str, default=None,
-                        help='OpenAI API base URL (for proxies)')
     args = parser.parse_args()
 
     # Load image
@@ -75,11 +99,27 @@ def main():
     config.sam3d_offline = args.sam3d_offline
     config.sam3d_use_fp16 = not args.sam3d_fp32
     config.pose_refinement = args.pose_refinement
+    config.vlm_ensemble_trials = args.vlm_trials
 
-    if args.openai_key:
+    # Configure VLM
+    config.vlm_provider = args.vlm
+    if args.vlm == 'qwen':
+        config.qwen_api_key = args.qwen_key
+        config.qwen_base_url = args.qwen_base_url
+        config.qwen_model = args.qwen_model
+    elif args.vlm == 'openai':
         config.openai_api_key = args.openai_key
-    if args.openai_base_url:
         config.openai_base_url = args.openai_base_url
+        config.gpt_model = args.openai_model
+
+    print(f"CAST Pipeline Configuration:")
+    print(f"  Device:          {config.device}")
+    print(f"  VLM provider:    {config.vlm_provider}")
+    print(f"  VLM model:       {config.get_vlm_model()}")
+    print(f"  VLM trials:      {config.vlm_ensemble_trials}")
+    print(f"  SAM 3D offline:  {config.sam3d_offline}")
+    print(f"  Pose refinement: {config.pose_refinement}")
+    print(f"  Physics corr:    {config.enable_physics_correction}")
 
     # Run pipeline
     pipe = CASTPipeline(config)

@@ -21,7 +21,7 @@ import open3d as o3d
 
 from config import CASTConfig
 from scene_analysis import (analyze_scene, SceneAnalysisResult, ObjectInfo,
-                            depth_to_point_cloud)
+                            depth_to_point_cloud, build_relation_graph_vlm)
 from sam3d_wrapper import SAM3DWrapper
 from pose_adapter import PoseAdapter
 from iterative_procedure import iterative_generate
@@ -88,6 +88,19 @@ class CASTScene:
         if self.camera_pose is not None:
             scene_graph['camera']['pose'] = self.camera_pose.tolist()
 
+        if self.relation_graph:
+            # Convert tuple keys to strings for JSON serialization
+            serializable_graph = {
+                'nodes': self.relation_graph.get('nodes', []),
+                'contact_edges': [
+                    list(e) for e in self.relation_graph.get('contact_edges', [])
+                ],
+                'support_edges': [
+                    list(e) for e in self.relation_graph.get('support_edges', [])
+                ],
+            }
+            scene_graph['relation_graph'] = serializable_graph
+
         with open(os.path.join(output_dir, 'scene_graph.json'), 'w') as f:
             json.dump(scene_graph, f, indent=2)
 
@@ -103,11 +116,24 @@ class CASTPipeline:
     """
     CAST: Component-Aligned 3D Scene Reconstruction from an RGB Image.
 
-    Example:
-        config = CASTConfig(device="cuda", max_iterations=3)
+    Example (Qwen VLM):
+        config = CASTConfig(
+            device="cuda",
+            vlm_provider="qwen",
+            qwen_api_key="sk-xxxxx",
+        )
         pipe   = CASTPipeline(config)
         scene  = pipe.reconstruct("my_room.jpg")
         scene.export("./output/my_room")
+
+    Example (GPT-4V):
+        config = CASTConfig(
+            device="cuda",
+            vlm_provider="openai",
+            openai_api_key="sk-xxxxx",
+        )
+        pipe   = CASTPipeline(config)
+        scene  = pipe.reconstruct("my_room.jpg")
     """
 
     def __init__(self, config: CASTConfig = None):
@@ -173,6 +199,13 @@ class CASTPipeline:
             openai_api_key=self.config.openai_api_key,
             openai_base_url=self.config.openai_base_url,
             gpt_model=self.config.gpt_model,
+            vlm_provider=self.config.vlm_provider,
+            vlm_api_key=self.config.get_vlm_api_key(),
+            vlm_base_url=self.config.get_vlm_base_url(),
+            vlm_model=self.config.get_vlm_model(),
+            vlm_ensemble_trials=self.config.vlm_ensemble_trials,
+            vlm_max_tokens=self.config.vlm_max_tokens,
+            vlm_temperature=self.config.vlm_temperature,
         )
         print(f"  Detected {len(analysis.objects)} objects")
         for obj in analysis.objects:
@@ -210,26 +243,35 @@ class CASTPipeline:
         print("\n" + "="*60)
         print("Stage 3/4: Scene Relation Graph")
         print("="*60)
-        from scene_analysis import build_relation_graph_gpt4v
-        scene.relation_graph = build_relation_graph_gpt4v(
+
+        scene.relation_graph = build_relation_graph_vlm(
             img, analysis.objects,
-            api_key=self.config.openai_api_key,
-            base_url=self.config.openai_base_url,
+            vlm_provider=self.config.vlm_provider,
+            api_key=self.config.get_vlm_api_key(),
+            base_url=self.config.get_vlm_base_url(),
+            model=self.config.get_vlm_model(),
+            ensemble_trials=self.config.vlm_ensemble_trials,
+            max_tokens=self.config.vlm_max_tokens,
+            temperature=self.config.vlm_temperature,
         )
         print(f"  Contact edges:  {len(scene.relation_graph.get('contact_edges', []))}")
         print(f"  Support edges:  {len(scene.relation_graph.get('support_edges', []))}")
 
-        # ---- Stage 4: Physics-aware correction (Section 5) ----
+        # ---- Stage 4: Physics-Aware Correction (Section 5) ----
         print("\n" + "="*60)
         print("Stage 4/4: Physics-Aware Correction")
         print("="*60)
-        if self.config.enable_physics_correction:
-            meshes = [o['mesh'] for o in scene.objects]
-            objects = analysis.objects
 
-            optim_transforms = optimize_poses(
+        if self.config.enable_physics_correction and (
+            scene.relation_graph.get('contact_edges') or
+            scene.relation_graph.get('support_edges')
+        ):
+            meshes = [obj['mesh'] for obj in scene.objects]
+            object_infos = analysis.objects
+
+            optimized = optimize_poses(
                 meshes=meshes,
-                objects=objects,
+                objects=object_infos,
                 relation_graph=scene.relation_graph,
                 steps=self.config.physics_optim_steps,
                 lr=self.config.physics_lr,
@@ -238,22 +280,17 @@ class CASTPipeline:
                 verbose=True,
             )
 
-            # Update scene transforms with optimised poses
-            for i, obj in enumerate(scene.objects):
-                if i in optim_transforms:
-                    R_opt, t_opt, _ = optim_transforms[i]
-                    obj['R'] = R_opt
-                    obj['t'] = t_opt
-                    # Keep scale from AlignGen
-            print("  Physics correction applied.")
+            # Apply optimized transforms
+            for obj_id, (R_opt, t_opt, s_opt) in optimized.items():
+                if obj_id < len(scene.objects):
+                    scene.objects[obj_id]['R'] = R_opt
+                    scene.objects[obj_id]['t'] = t_opt
+                    # scale is kept from generation; physics only optimizes R, t
         else:
-            print("  Skipped (enable_physics_correction=False)")
+            print("  Physics correction skipped (no edges or disabled).")
 
-        # ---- Export ----
-        if output_dir is not None:
-            scene.export(output_dir)
-
-        print("\n" + "="*60)
-        print("CAST reconstruction complete.")
-        print("="*60)
+        # Write output
+        out = output_dir or self.config.output_dir
+        scene.export(out)
+        print(f"\n[CAST] Reconstruction complete! ({len(scene.objects)} objects)")
         return scene

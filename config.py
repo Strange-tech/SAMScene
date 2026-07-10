@@ -5,6 +5,9 @@ Many settings mirror the paper's reported values. Tune for your hardware
 and quality/speed trade-off.
 """
 
+import os
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+
 from dataclasses import dataclass, field
 from typing import Optional, List
 
@@ -19,10 +22,26 @@ class CASTConfig:
     depth_model: str = "moge"            # moge | metric3d | zoedepth
     sam_variant: str = "sam2"            # sam2 | sam (GroundedSAMv2)
 
-    # GPT-4V for relation reasoning (set to None to skip)
+    # ---- VLM for relation reasoning (Section 5.3) ----
+    # Provider selection: "qwen" | "openai" | None (skip)
+    # Both use OpenAI-compatible API format.
+    vlm_provider: Optional[str] = "qwen"
+
+    # Qwen / DashScope settings
+    # Model choices: qwen-vl-max, qwen-vl-plus, qwen2.5-vl-72b-instruct
+    qwen_api_key: Optional[str] = None
+    qwen_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    qwen_model: str = "qwen-vl-max"
+
+    # OpenAI / GPT-4V settings (fallback if vlm_provider == "openai")
     openai_api_key: Optional[str] = None
-    openai_base_url: Optional[str] = None  # proxy / custom endpoint
+    openai_base_url: Optional[str] = None
     gpt_model: str = "gpt-4-vision-preview"
+
+    # VLM ensemble settings (shared)
+    vlm_ensemble_trials: int = 3         # majority-vote trials
+    vlm_max_tokens: int = 2048
+    vlm_temperature: float = 0.3
 
     # ---- SAM 3D Object Generation ----
     # Replaces the original ObjectGen (CLAY-based) + AlignGen.
@@ -57,6 +76,37 @@ class CASTConfig:
     output_dir: str = "./output"
     device: str = "cuda"
 
+    # ------------------------------------------------------------------
+    def get_vlm_api_key(self) -> Optional[str]:
+        """Return the active VLM API key based on provider choice."""
+        if self.vlm_provider == "qwen":
+            return self.qwen_api_key
+        elif self.vlm_provider == "openai":
+            return self.openai_api_key
+        return None
+
+    def get_vlm_base_url(self) -> Optional[str]:
+        """Return the active VLM base URL."""
+        if self.vlm_provider == "qwen":
+            return self.qwen_base_url
+        elif self.vlm_provider == "openai":
+            return self.openai_base_url or "https://api.openai.com/v1"
+        return None
+
+    def get_vlm_model(self) -> str:
+        """Return the active VLM model name."""
+        if self.vlm_provider == "qwen":
+            return self.qwen_model
+        elif self.vlm_provider == "openai":
+            return self.gpt_model
+        return ""
+
+    @property
+    def vlm_enabled(self) -> bool:
+        """Whether VLM relation reasoning is available."""
+        return (self.vlm_provider is not None
+                and self.get_vlm_api_key() is not None)
+
 
 # Convenient presets
 def quick_config() -> CASTConfig:
@@ -72,3 +122,11 @@ def quick_config() -> CASTConfig:
 def full_config() -> CASTConfig:
     """Return the full-quality config."""
     return CASTConfig()
+
+
+def qwen_config(api_key: str) -> CASTConfig:
+    """Return a config pre-configured for Qwen (DashScope) VLM."""
+    return CASTConfig(
+        vlm_provider="qwen",
+        qwen_api_key=api_key,
+    )

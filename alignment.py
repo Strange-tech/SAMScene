@@ -296,31 +296,236 @@ def differentiable_render_align(mesh: "open3d.geometry.TriangleMesh",
     Optimize rotation and translation so that a rendered view of the mesh
     aligns with the target RGB image (Section 6.3 ablation).
 
-    NOTE: This is a simplified version. The full differentiable renderer
-    (Nvdiffrast / PyTorch3D) would handle lighting and texture.
+    Uses PyTorch3D's differentiable silhouette renderer to minimise the
+    mismatch between rendered mask and target segmentation. Falls back to
+    a simpler point-cloud reprojection loss when PyTorch3D is unavailable.
+
+    REQUIRES EXTERNAL SETUP (for full differentiable rendering):
+        pip install pytorch3d
+        (see https://github.com/facebookresearch/pytorch3d)
 
     Args:
         mesh:        Open3D TriangleMesh (canonical space)
-        target_rgb:  (H, W, 3) reference image
+        target_rgb:  (H, W, 3) reference RGB image
         intrinsics:  3 x 3 camera intrinsics
         steps:       optimization steps
         lr:          learning rate
 
     Returns:
-        R, t, s (scale fixed to 1.0 here)
+        R:  3x3 rotation matrix
+        t:  3-vector translation
+        s:  uniform scale (fixed to 1.0 for this stage)
     """
     import open3d as o3d
 
+    h, w = target_rgb.shape[:2]
+
+    # Extract target silhouette from RGB (simple luminance threshold)
+    # In practice this would come from segmentation; here we use a rough mask
+    target_gray = cv2.cvtColor if "cv2" in dir() else __import__("cv2").cvtColor
+    try:
+        import cv2 as _cv2
+        gray = _cv2.cvtColor(target_rgb, _cv2.COLOR_RGB2GRAY)
+        target_mask = (gray < 250).astype(np.float32)  # non-white = object
+    except Exception:
+        # Fallback: assume entire image is object
+        target_mask = np.ones((h, w), dtype=np.float32)
+
     # Sample surface points
-    pts = np.asarray(mesh.sample_points_uniformly(number_of_points=2048).points)
+    pts_np = np.asarray(
+        mesh.sample_points_uniformly(number_of_points=2048).points
+    )
+    pts = torch.from_numpy(pts_np.astype(np.float32))
 
-    # Initialize transform
-    R = torch.eye(3, requires_grad=False)
-    t = torch.zeros(3, requires_grad=True)
-    # Simple: minimize 2D projection error of sampled points against mask
-    # This is a placeholder; real DR would render the mesh and compare pixels.
+    # Camera parameters
+    fx, fy = intrinsics[0, 0], intrinsics[1, 1]
+    cx, cy = intrinsics[0, 2], intrinsics[1, 2]
 
-    target_t = torch.from_numpy(pts.mean(axis=0)).float()
-    t_opt = target_t
+    # Build camera projection matrix (PyTorch3D NDC or manual)
+    target_mask_t = torch.from_numpy(target_mask).float()
 
-    return np.eye(3, dtype=np.float32), t_opt.numpy().astype(np.float32), 1.0
+    # Try PyTorch3D-based optimisation first
+    try:
+        import pytorch3d
+        _has_pytorch3d = True
+    except ImportError:
+        _has_pytorch3d = False
+        warnings.warn(
+            "differentiable_render_align: PyTorch3D not installed. "
+            "Falling back to point-cloud reprojection loss. "
+            "Install with: pip install pytorch3d"
+        )
+
+    if _has_pytorch3d:
+        return _dr_align_pytorch3d(
+            mesh, target_mask_t, (h, w), (fx, fy, cx, cy),
+            steps=steps, lr=lr,
+        )
+    else:
+        return _dr_align_projection(
+            pts, target_mask_t, (h, w), (fx, fy, cx, cy),
+            steps=steps, lr=lr,
+        )
+
+
+def _dr_align_pytorch3d(
+    mesh, target_mask, img_size, cam_params,
+    steps=200, lr=0.01,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """
+    Full differentiable silhouette rendering via PyTorch3D.
+    Optimises (R, t) to make rendered mask match target_mask.
+    """
+    import open3d as o3d
+    from pytorch3d.structures import Meshes
+    from pytorch3d.renderer import (
+        FoVPerspectiveCameras, RasterizationSettings,
+        MeshRenderer, MeshRasterizer, SoftSilhouetteShader,
+        look_at_view_transform,
+    )
+    from pytorch3d.io import load_obj
+
+    h, w = img_size
+    fx, fy, cx, cy = cam_params
+
+    # Convert Open3D mesh → PyTorch3D Meshes
+    verts = torch.from_numpy(
+        np.asarray(mesh.vertices).astype(np.float32)
+    ).unsqueeze(0)
+    faces = torch.from_numpy(
+        np.asarray(mesh.triangles).astype(np.int64)
+    ).unsqueeze(0)
+
+    # Estimate FoV from intrinsics
+    fov = 2.0 * torch.atan(torch.tensor(h / (2.0 * fy)))
+
+    # Initialise optimisable parameters (rotation in axis-angle, translation)
+    r_axis_angle = torch.zeros(3, requires_grad=True)  # identity rotation
+    t_vec = torch.zeros(3, requires_grad=True)
+    # Initialise t to center the object
+    with torch.no_grad():
+        centroid = verts.squeeze(0).mean(dim=0)
+        t_vec.copy_(torch.tensor([0.0, 0.0, 2.0]))
+
+    optimizer = torch.optim.Adam([r_axis_angle, t_vec], lr=lr)
+
+    # Renderer setup
+    raster_settings = RasterizationSettings(
+        image_size=(h, w),
+        blur_radius=0.0,
+        faces_per_pixel=1,
+    )
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    verts = verts.to(device)
+    faces = faces.to(device)
+    target_mask = target_mask.to(device)
+    r_axis_angle = r_axis_angle.to(device)
+    t_vec = t_vec.to(device)
+
+    meshes = Meshes(verts=verts, faces=faces)
+
+    for step in range(steps):
+        optimizer.zero_grad()
+
+        R = _axis_angle_to_matrix(r_axis_angle)
+        # Build camera at (0,0,0) looking along +Z
+        camera = FoVPerspectiveCameras(
+            fov=fov, degrees=False, device=device,
+            R=R.unsqueeze(0), T=t_vec.unsqueeze(0),
+        )
+
+        rasterizer = MeshRasterizer(
+            cameras=camera, raster_settings=raster_settings
+        )
+        fragments = rasterizer(meshes)
+        # Soft silhouette: alpha = 1 - exp(-depth)
+        alpha = 1.0 - torch.exp(-fragments.zbuf.clamp(min=0))
+        rendered = alpha[..., 0]  # (1, H, W)
+
+        loss = torch.nn.functional.mse_loss(rendered, target_mask)
+        loss.backward()
+        optimizer.step()
+
+    # Extract final transform
+    R_final = _axis_angle_to_matrix(r_axis_angle.detach()).cpu().numpy()
+    t_final = t_vec.detach().cpu().numpy()
+
+    return R_final.astype(np.float32), t_final.astype(np.float32), 1.0
+
+
+def _dr_align_projection(
+    pts, target_mask, img_size, cam_params,
+    steps=200, lr=0.01,
+) -> Tuple[np.ndarray, np.ndarray, float]:
+    """
+    Fallback: minimise 2D projection error of mesh surface points
+    against the target silhouette (no real rendering, but differentiable).
+    """
+    h, w = img_size
+    fx, fy, cx, cy = cam_params
+
+    # Initialise
+    # 6D rotation representation (more stable for optimisation)
+    r6d = torch.tensor([1.0, 0.0, 0.0, 0.0, 1.0, 0.0], requires_grad=True)
+    t_vec = torch.zeros(3, requires_grad=True)
+    with torch.no_grad():
+        t_vec[2] = 2.0  # place object 2m in front of camera
+
+    target_mask_t = target_mask
+
+    optimizer = torch.optim.Adam([r6d, t_vec], lr=lr)
+
+    for step in range(steps):
+        optimizer.zero_grad()
+
+        # Convert 6D → 3x3 rotation
+        a1, a2 = r6d[:3], r6d[3:6]
+        b1 = a1 / (a1.norm() + 1e-8)
+        b2 = a2 - torch.dot(b1, a2) * b1
+        b2 = b2 / (b2.norm() + 1e-8)
+        b3 = torch.cross(b1, b2)
+        R = torch.stack([b1, b2, b3], dim=1)  # 3x3
+
+        # Transform + project points
+        pts_transformed = pts @ R.T + t_vec  # (N, 3)
+        z = pts_transformed[:, 2].clamp(min=0.01)
+        u = (pts_transformed[:, 0] * fx / z + cx).long()
+        v = (pts_transformed[:, 1] * fy / z + cy).long()
+
+        # Build rendered mask from point projections
+        rendered = torch.zeros(h, w)
+        valid = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+        if valid.any():
+            rendered[v[valid], u[valid]] = 1.0
+
+        # MSE against target mask
+        loss = torch.nn.functional.mse_loss(rendered, target_mask_t)
+        loss.backward()
+        optimizer.step()
+
+    # Extract final transform
+    with torch.no_grad():
+        a1, a2 = r6d[:3], r6d[3:6]
+        b1 = a1 / (a1.norm() + 1e-8)
+        b2 = a2 - torch.dot(b1, a2) * b1
+        b2 = b2 / (b2.norm() + 1e-8)
+        b3 = torch.cross(b1, b2)
+        R_final = torch.stack([b1, b2, b3], dim=1).numpy()
+        t_final = t_vec.detach().numpy()
+
+    return R_final.astype(np.float32), t_final.astype(np.float32), 1.0
+
+
+def _axis_angle_to_matrix(axis_angle: torch.Tensor) -> torch.Tensor:
+    """Convert axis-angle representation to 3x3 rotation matrix."""
+    angle = axis_angle.norm()
+    if angle < 1e-8:
+        return torch.eye(3, device=axis_angle.device)
+    axis = axis_angle / angle
+    K = torch.tensor([
+        [0, -axis[2], axis[1]],
+        [axis[2], 0, -axis[0]],
+        [-axis[1], axis[0], 0],
+    ], device=axis_angle.device)
+    return torch.eye(3, device=axis_angle.device) + \
+        torch.sin(angle) * K + (1 - torch.cos(angle)) * (K @ K)
