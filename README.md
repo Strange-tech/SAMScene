@@ -11,21 +11,36 @@
 
 本文复现了 CAST 论文描述的**完整推理管线架构**，并使用 **Meta SAM 3D Objects** 替代了原论文的 ObjectGen + AlignGen，使用 **Qwen-VL** (DashScope API) 替代了原论文的 GPT-4V 进行场景关系图推理。
 
+### 管线测试进度
+
+| 测试 | 阶段 | 状态 | 说明 |
+|------|------|------|------|
+| **test_01** | 加载图像 | ✅ 通过 | 图像读取与格式验证 |
+| **test_02** | 场景分析 | ✅ 通过 | Florence-2 检测 + SAM 分割 + MoGe 深度 + 点云生成 |
+| **test_03** | 物体生成 | ⏳ 待完成 | SAM 3D 生成 mesh + PoseAdapter 坐标桥接（需 HF token 授权） |
+| **test_04** | 关系图 | ⏳ 待完成 | VLM (Qwen-VL/GPT-4V) Set-of-Mark 场景关系推理 |
+| **test_05** | 物理校正 | ⏳ 待完成 | SDF 约束图 + 6D 旋转优化 |
+| **test_06** | 导出场景 | ⏳ 待完成 | 合并网格 + 场景图 JSON 导出 |
+
+### 模块实现状态
+
 | 模块 | 状态 | 说明 |
 |------|------|------|
-| **SAM 3D Objects** | ✅ 主生成器 | `facebook/sam-3d-objects`，自动从 HuggingFace 下载（~7GB） |
+| **SAM 3D Objects** | ⚠️ 待授权 | `facebook/sam-3d-objects`（~7GB），需 HF token 访问 gated repo |
 | **PoseAdapter（坐标桥接+ICP精修）** | ✅ 完整实现 | 替代原 AlignGen，支持 none/umeyama/icp 三种精修模式 |
 | **Qwen-VL 场景图推理** | ✅ 完整实现 | DashScope API，也兼容 GPT-4V（OpenAI 兼容格式） |
-| **Florence-2 目标检测** | ✅ 完整实现 | 懒加载，自动从 HuggingFace 下载（~1.7GB） |
+| **Florence-2 目标检测** | ✅ 已验证 | 懒加载 `microsoft/Florence-2-large`（~1.7GB），test_02 通过 |
 | **Grounding DINO 目标检测** | ✅ 完整实现 | 备选检测器 `grounding-dino-tiny`（~700MB），支持文本提示 |
-| **GroundedSAM (SAM) 分割** | ✅ 完整实现 | 懒加载 `facebook/sam-vit-base`（~1.2GB），bbox-prompted mask |
-| **MoGe 深度估计** | ✅ 完整实现 | 懒加载 `Ruicheng/moge-vitl`（~1.2GB），输出 metric depth + 内参 |
+| **GroundedSAM (SAM) 分割** | ✅ 已验证 | 懒加载 `facebook/sam-vit-base`（~1.2GB），test_02 通过 |
+| **MoGe 深度估计** | ✅ 已验证 | 懒加载 `Ruicheng/moge-vitl`（~1.2GB），test_02 通过 |
 | **Depth-Anything-V2 深度估计** | ✅ 完整实现 | 备选深度估计器（~200MB），轻量化替代方案 |
 | **Umeyama 变换求解** | ✅ 完整实现 | 闭式 SVD 解法 |
 | **可微渲染对齐** | ✅ 完整实现 | PyTorch3D silhouette / 点云重投影 loss 双模式 |
 | **物理感知校正** | ✅ 核心实现 | SDF 约束 + 6D 旋转表示 + PyTorch 优化 |
 | **Set-of-Mark 可视化** | ✅ 完整实现 | 用于 VLM 视觉提示 |
 | **关系图构建** | ✅ 完整实现 | 细粒度→粗粒度映射 + 多数投票集成 |
+
+> **环境版本锁定**: `requirements.txt` 记录了经过验证的完整依赖版本（208 个包）。安装新包前请先检查版本冲突。关键版本：`transformers==4.41.2`, `huggingface-hub==0.26.2`, `diffusers==0.25.1`。
 
 ---
 
