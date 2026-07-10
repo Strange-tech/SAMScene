@@ -100,7 +100,7 @@ def main():
         objects.append(obj)
         print(f"  [{i}] {obj.name}: {pc.shape[0]} points, "
               f"bbox={obj.bbox}, "
-              f"visible_area={obj.occlusion_mask.sum()}/{masks[i].sum()}")
+              f"visible_area={obj.occlusion_mask.sum()}/{occlusion_masks[i].sum()}")
 
     # -------------------------------------------------------
     # Save intermediate results
@@ -132,12 +132,16 @@ def main():
         'num_objects': len(objects),
         'object_names': [obj.name for obj in objects],
         'image_shape': [h, w],
-        'depth_model': 'moge (stub)',
-        'detection_model': 'florence-2 (stub)',
-        'segmentation_model': 'groundedsamv2 (stub)',
+        'depth_model': 'moge',
+        'detection_model': 'florence-2',
+        'segmentation_model': 'groundedsamv2',
     }
     with open(os.path.join(args.output, 'scene_meta.json'), 'w') as f:
         json.dump(meta, f, indent=2)
+
+    # ---- 自动生成各步骤可视化 ----
+    from utils.visualization import visualize_all_steps
+    visualize_all_steps(args.output, args.output)
 
     print(f"\n  [PASS] Stage 1 complete — {len(objects)} objects analyzed.")
     print(f"  Saved: {args.output}/object_*.npz, scene_data.npz, scene_meta.json")
