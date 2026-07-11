@@ -21,7 +21,7 @@ contourpy==1.3.2
 cycler==0.12.1
 dash==4.4.0
 decorator==5.3.1
-diffusers==0.30.2
+diffusers==0.25.1
 distro==1.9.0
 docstring_parser==0.18.0
 einops==0.8.2
@@ -51,7 +51,7 @@ hf-gradio==0.4.1
 hf-xet==1.5.1
 httpcore==1.0.9
 httpx==0.28.1
-huggingface-hub==0.36.2
+huggingface-hub==0.26.2
 idna==3.15
 ImageIO==2.37.3
 imageio-ffmpeg==0.6.0
@@ -172,7 +172,7 @@ tensorboard-data-server==0.7.2
 tensorly==0.9.0
 threadpoolctl==3.6.0
 timm==1.0.27
-tokenizers==0.21.4
+tokenizers==0.19.1
 tomlkit==0.12.0
 torch==2.4.0+cu121
 torchaudio==2.4.0+cu121
@@ -180,7 +180,7 @@ torchmetrics==1.9.0
 torchvision==0.19.0+cu121
 tqdm==4.68.4
 traitlets==5.15.1
-transformers==4.49.0
+transformers==4.41.2
 trimesh==4.12.2
 triton==3.0.0
 typeguard==4.5.2

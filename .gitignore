@@ -4,3 +4,4 @@ __pycache__/
 data/
 test/output/
 output/
+pretrained_weights/

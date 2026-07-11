@@ -1,6 +1,6 @@
 #!/bin/bash
 set -e
-export HF_ENDPOINT="https://hf-mirror.com"
+# export HF_ENDPOINT="https://hf-mirror.com"
 IMAGE="data/images/room.png"
 OUTPUT="test/output"
 DEVICE="cuda"
@@ -24,8 +24,8 @@ echo ""; echo ">>>> Stage 1: Load Image <<<<"
 $PYTHON test/test_01_load_image.py --image "$IMAGE" --output "$OUTPUT"
 echo ""; echo ">>>> Stage 2: Scene Analysis <<<<"
 $PYTHON test/test_02_scene_analysis.py --image "$IMAGE" --output "$OUTPUT"
-# echo ""; echo ">>>> Stage 3: Object Generation <<<<"
-# $PYTHON test/test_03_object_generation.py --output "$OUTPUT" --device "$DEVICE"
+echo ""; echo ">>>> Stage 3: Object Generation <<<<"
+$PYTHON test/test_03_object_generation.py --output "$OUTPUT" --device "$DEVICE"
 # echo ""; echo ">>>> Stage 4: Relation Graph <<<<"
 # if [ -n "$QWEN_KEY" ]; then
 #     if [ "$VLM" = "qwen" ]; then
