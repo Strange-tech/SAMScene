@@ -6,7 +6,8 @@ and quality/speed trade-off.
 """
 
 import os
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+# HF_ENDPOINT mirror disabled for gated models. Set HF_TOKEN instead.
+# os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 from dataclasses import dataclass, field
 from typing import Optional, List

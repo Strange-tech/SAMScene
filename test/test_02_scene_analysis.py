@@ -50,6 +50,26 @@ def main():
         detections = [{'name': 'scene', 'description': 'full image', 'bbox': (0, 0, w, h)}]
 
     # -------------------------------------------------------
+    # Filter 1.5: Remove full-image masks
+    # -------------------------------------------------------
+    max_mask_ratio = 0.8
+    total_pixels = h * w
+    valid_detections = []
+    for d in detections:
+        x1, y1, x2, y2 = d['bbox']
+        bbox_area = (x2 - x1) * (y2 - y1)
+        ratio = bbox_area / total_pixels
+        if ratio > max_mask_ratio:
+            print(f'  [FILTERED] "{d.get("name", "unknown")}" — bbox covers {ratio*100:.0f}% of image (>{max_mask_ratio*100:.0f}%)')
+        else:
+            valid_detections.append(d)
+    if not valid_detections:
+        print('  [WARNING] All objects filtered, keeping originals.')
+        valid_detections = detections
+    detections = valid_detections
+    print(f'  After filtering: {len(detections)} objects')
+
+    # -------------------------------------------------------
     # Step 2: Segmentation — GroundedSAMv2
     # -------------------------------------------------------
     print("\n--- 2.2 Segmentation (GroundedSAMv2) ---")
