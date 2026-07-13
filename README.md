@@ -1,7 +1,5 @@
 # SAMScene: 3D Scene Reconstruction from a Single Image
 
-基于 [CAST (CVPR 2025)](https://arxiv.org/abs/2502.12894) 的复现实现，使用 [SAM 3D Objects](https://github.com/facebookresearch/sam-3d-objects) 作为 3D 生成后端，支持 [MIDI-3D](https://github.com/VAST-AI/MIDI-3D) 作为备选模型。
-
 ---
 
 ## 测试进度
