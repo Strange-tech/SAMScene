@@ -99,6 +99,6 @@ python test/test_06_export.py --output ./test/output
 
 ## 参考文献
 
-1. **CAST** — Kaixin Yao, Longwen Zhang, et al. *CAST: Component-Aligned 3D Scene Reconstruction from an RGB Image.* CVPR 2025.
-2. **SAM 3D Objects** — Meta Superintelligence Labs. *SAM 3D Objects: 3DFY Anything in Images.* 2025.
-3. **MIDI** — VAST-AI. *MIDI-3D: Multi-Instance Diffusion for 3D Scene Generation.* CVPR 2025.
+1. **CAST** — Kaixin Yao, Longwen Zhang, et al. *CAST: Component-Aligned 3D Scene Reconstruction from an RGB Image.*
+2. **SAM 3D Objects** — Meta Superintelligence Labs. *SAM 3D Objects: 3DFY Anything in Images.*
+3. **MIDI** — VAST-AI. *MIDI-3D: Multi-Instance Diffusion for 3D Scene Generation.*
