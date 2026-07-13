@@ -1,6 +1,5 @@
 '''
-SAM 3D Wrapper — uses hydra.utils.instantiate.
-Multi-object: pass FULL image + per-object mask (no external crop).
+SAM 3D Wrapper — directly uses official Inference + make_scene from notebook/inference.py
 '''
 import os, sys, warnings
 import numpy as np
@@ -8,6 +7,7 @@ import torch
 from scipy.ndimage import maximum_filter, minimum_filter
 import utils3d.numpy as _un
 
+# ---- Monkey-patch ALL missing utils3d functions ----
 def _depth_edge(depth, rtol=0.03, mask=None):
     if mask is None: mask = np.ones_like(depth, dtype=bool)
     d = np.where(mask, depth, np.nan)
@@ -17,100 +17,75 @@ def _depth_edge(depth, rtol=0.03, mask=None):
 
 def _normals_edge(normals, rtol=0.1, mask=None):
     if mask is None: mask = np.ones(normals.shape[:2], dtype=bool)
-    h, w = normals.shape[:2]
-    edge = np.zeros((h, w), dtype=bool)
+    h, w = normals.shape[:2]; edge = np.zeros((h, w), dtype=bool)
     for di, dj in [(0,1),(1,0),(1,1),(-1,1)]:
         shifted = np.roll(np.roll(normals, di, axis=0), dj, axis=1)
         dot = np.abs(np.sum(normals * shifted, axis=-1))
-        dot = np.clip(dot, 0, 1)
-        edge |= (dot < np.cos(rtol))
+        dot = np.clip(dot, 0, 1); edge |= (dot < np.cos(rtol))
     edge[~mask] = False
     return edge
 
 _un.depth_edge = _depth_edge
 _un.normals_edge = _normals_edge
+_un.points_to_normals = lambda *a, **kw: np.zeros((1,1,3))
+_un.image_uv = lambda *a, **kw: (np.zeros((1,1,2)), np.zeros((1,1)))
+_un.image_mesh = lambda *a, **kw: np.zeros((0,3))
 
 os.environ.setdefault('LIDRA_SKIP_INIT', 'true')
-_sam3d_repo = '/mnt/sda/johnli/sam3d_repo'
-if _sam3d_repo not in sys.path:
-    sys.path.insert(0, _sam3d_repo)
+if '/mnt/sda/johnli/sam3d_repo' not in sys.path:
+    sys.path.insert(0, '/mnt/sda/johnli/sam3d_repo')
+if '/mnt/sda/johnli/sam3d_repo/notebook' not in sys.path:
+    sys.path.insert(0, '/mnt/sda/johnli/sam3d_repo/notebook')
 
-from omegaconf import OmegaConf
-from hydra.utils import instantiate
+# ---- Directly import official Inference and make_scene ----
+from inference import Inference, make_scene
 
 
 class SAM3DWrapper:
-    def __init__(self, model_id='facebook/sam-3d-objects', device='cuda',
-                 use_fp16=True, offline=False, config_path=None):
-        self.device = device
-        self._pipeline = None
-        self._available = False
+    def __init__(self, device='cuda', config_path=None):
         if config_path is None:
             config_path = '/mnt/sda/johnli/SAMScene/pretrained_weights/sam3d/checkpoints/pipeline.yaml'
-        self._init_model(config_path)
-
-    def _init_model(self, config_path):
-        try:
-            print(f'[SAM3D] Loading from {config_path} ...')
-            config = OmegaConf.load(config_path)
-            config.rendering_engine = 'pytorch3d'
-            config.compile_model = False
-            config.workspace_dir = os.path.dirname(config_path)
-            self._pipeline = instantiate(config)
-            self._available = True
-            print(f'[SAM3D] Model loaded on {self.device}.')
-        except Exception as e:
-            warnings.warn(f'[SAM3D] Load failed: {e}')
+        self._inference = Inference(config_path, compile=False)
+        self._available = True
 
     @property
     def is_available(self):
         return self._available
 
-    @torch.no_grad()
-    def generate(self, image, mask,
-                 output_format='mesh',
-                 num_inference_steps=50,
-                 guidance_scale=3.0):
+    def generate_scene_ply(self, image, masks, output_path, seed=42):
         '''
-        Generate mesh + pose from FULL image + per-object mask.
-        image: (H, W, 3) uint8 RGB — FULL image, NOT cropped
-        mask:  (H, W) uint8 — per-object binary mask
-        Returns: (mesh, R_3x3, t_3, scale_float)
+        Official demo pipeline:
+          outputs = [inference(image, mask) for mask in masks]
+          scene_gs = make_scene(*outputs)
+          scene_gs.save_ply(output_path)
         '''
-        if not self.is_available:
-            return self._generate_stub(image, mask)
+        print(f'[SAM3D] Generating {len(masks)} objects (official Inference API) ...')
+        outputs = []
+        for i, mask in enumerate(masks):
+            print(f'  [{i}] running inference, mask_nonzero={mask.sum()} ...')
+            output = self._inference(image, mask, seed=seed)
+            outputs.append(output)
 
-        if image.dtype != np.uint8:
-            image = (image * 255).astype(np.uint8)
+        print(f'[SAM3D] Combining into scene (make_scene) ...')
+        scene_gs = make_scene(*outputs)
 
-        # Embed mask in alpha channel (same as Inference.merge_mask_to_rgba)
-        mask_u8 = (mask.astype(np.uint8) * 255)[..., None]
-        rgba = np.concatenate([image[..., :3], mask_u8], axis=-1)
+        print(f'[SAM3D] Saving to {output_path} ...')
+        scene_gs.save_ply(output_path)
 
-        print(f'[SAM3D] Running on full image {rgba.shape} ...')
-        output = self._pipeline.run(
-            rgba, None, seed=42,
-            stage1_only=False,
-            with_mesh_postprocess=False,
-            with_texture_baking=False,
-            use_vertex_color=True,
-        )
+        # Also extract individual mesh info for downstream use
+        meshes, poses = [], []
+        for i, output in enumerate(outputs):
+            mesh = self._extract_mesh(output)
+            R, t, s = self._extract_pose(output)
+            meshes.append(mesh)
+            poses.append({'R': R, 't': t, 's': s})
 
-        mesh = self._extract_mesh(output)
-        R, t, s = self._extract_pose(output)
-        return mesh, R, t, s
+        return output_path, meshes, poses
 
-    def _generate_stub(self, image, mask):
+    def _extract_mesh(self, output):
         import open3d as o3d
-        mesh = o3d.geometry.TriangleMesh.create_sphere(radius=0.3)
-        mesh.compute_vertex_normals()
-        mesh.paint_uniform_color([0.7, 0.7, 0.7])
-        return mesh, np.eye(3, dtype=np.float32), np.zeros(3, dtype=np.float32), 1.0
-
-    def _extract_mesh(self, outputs):
-        import open3d as o3d
-        if 'mesh' in outputs and outputs['mesh']:
-            m = outputs['mesh'][0]
+        if 'mesh' in output and output['mesh']:
+            m = output['mesh'][0]
             mesh = o3d.geometry.TriangleMesh()
             mesh.vertices = o3d.utility.Vector3dVector(np.asarray(m.vertices.cpu()))
             mesh.triangles = o3d.utility.Vector3iVector(np.asarray(m.faces.cpu()))
@@ -118,29 +93,27 @@ class SAM3DWrapper:
             return mesh
         return o3d.geometry.TriangleMesh.create_sphere(radius=0.3)
 
-    def _extract_pose(self, outputs):
-        rot = outputs.get('rotation')
+    def _extract_pose(self, output):
+        from pytorch3d.transforms import quaternion_to_matrix
+        rot = output.get('rotation')
         if rot is not None:
             if torch.is_tensor(rot): rot = rot.cpu().numpy()
             rot = np.asarray(rot).reshape(-1)
-            if rot.shape == (4,):  # quaternion → 3x3
-                from pytorch3d.transforms import quaternion_to_matrix
+            if rot.shape == (4,):
                 R = quaternion_to_matrix(torch.from_numpy(rot).unsqueeze(0)).squeeze(0).numpy()
-            elif rot.shape == (9,):
-                R = rot.reshape(3, 3)
             else:
                 R = np.eye(3)
         else:
             R = np.eye(3)
 
-        t = outputs.get('translation')
+        t = output.get('translation')
         if t is not None:
             if torch.is_tensor(t): t = t.cpu().numpy()
             t = np.asarray(t, dtype=np.float32).flatten()[:3]
         else:
             t = np.zeros(3, dtype=np.float32)
 
-        s = outputs.get('scale')
+        s = output.get('scale')
         if s is not None:
             if torch.is_tensor(s): s = s.cpu().flatten()[0].item()
             s = float(np.asarray(s).flatten()[0])
